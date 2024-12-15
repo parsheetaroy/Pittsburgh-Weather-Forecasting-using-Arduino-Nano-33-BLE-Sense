@@ -1,0 +1,105 @@
+#include <broadmodel_inferencing.h>
+#include <Arduino_LPS22HB.h> // Library for LPS22HB sensor
+
+/* Constants -------------------------------------------------------- */
+#define INPUT_FEATURES 2             // Temperature and Pressure
+#define BUFFER_SIZE INPUT_FEATURES   // Current temp and pressure
+
+/* Sensor Data Buffer */
+float sensor_data[BUFFER_SIZE];      // Buffer for input data
+
+/* Define Broad Condition Labels */
+const char* condition_labels[] = {
+    "Cloudy",
+    "Sunny",
+    "Rainy",
+    "Snowy",
+    "Other"
+};
+const int NUM_CONDITIONS = sizeof(condition_labels) / sizeof(condition_labels[0]);
+
+/* Setup -------------------------------------------------------- */
+void setup() {
+    Serial.begin(115200);
+    while (!Serial) {
+        // Wait for serial connection; comment out if not needed
+    }
+    Serial.println("Starting Weather Forecasting...\r\n");
+
+    // Initialize LPS22HB sensor
+    if (!BARO.begin()) {
+        Serial.println("Error: LPS22HB sensor initialization failed!");
+        while (true) {
+            // Blink LED to indicate error (optional)
+            digitalWrite(LED_BUILTIN, HIGH);
+            delay(500);
+            digitalWrite(LED_BUILTIN, LOW);
+            delay(500);
+        }
+    }
+    Serial.println("LPS22HB sensor initialized successfully!");
+}
+
+/* Main Loop -------------------------------------------------------- */
+void loop() {
+    // Read temperature and pressure from LPS22HB
+    float temperature = BARO.readTemperature(); // Temperature in Celsius
+    float pressure = BARO.readPressure();       // Pressure in kPa
+
+    // Store the readings in the sensor_data array
+    sensor_data[0] = temperature;
+    sensor_data[1] = pressure;
+
+    // Prepare the input signal for the model
+    signal_t signal;
+    int err = numpy::signal_from_buffer(sensor_data, BUFFER_SIZE, &signal);
+    if (err != 0) {
+        Serial.print("Error: Failed to prepare signal (");
+        Serial.print(err);
+        Serial.println(")");
+        delay(1000); // Short delay before retrying
+        return;
+    }
+
+    // Run the TensorFlow Lite model
+    ei_impulse_result_t result = { 0 };
+    err = run_classifier(&signal, &result, false);
+    if (err != EI_IMPULSE_OK) {
+        Serial.print("Error: Model inference failed (");
+        Serial.print(err);
+        Serial.println(")");
+        delay(1000); // Short delay before retrying
+        return;
+    }
+
+    // Output the predicted temperature and pressure
+    Serial.println("\nPredicted Next Day's Weather Features:");
+    float predicted_temperature = result.classification[0].value; // First output for temperature
+    float predicted_pressure = result.classification[1].value;    // Second output for pressure
+
+    // Scale the predictions if necessary
+    Serial.print("  Temperature: ");
+    Serial.print(predicted_temperature, 2); // Print predicted temperature
+    Serial.println(" °C");
+
+    Serial.print("  Pressure: ");
+    Serial.print(predicted_pressure, 2); // Print predicted pressure
+    Serial.println(" hPa");
+
+    // Find the weather condition with the highest probability
+    int predicted_condition_index = 0;
+    float max_probability = result.classification[2].value; // Start from condition index
+    for (int i = 3; i < EI_CLASSIFIER_LABEL_COUNT; i++) {   // Iterate over conditions
+        if (result.classification[i].value > max_probability) {
+            max_probability = result.classification[i].value;
+            predicted_condition_index = i - 2; // Adjust index to map to condition_labels
+        }
+    }
+
+    // Print the predicted condition
+    Serial.print("  Condition:   ");
+    Serial.println(condition_labels[predicted_condition_index]);
+
+    // Delay for testing (use appropriate delay for actual use case)
+    delay(10000); // 10 seconds for testing; change to simulate longer durations
+}
